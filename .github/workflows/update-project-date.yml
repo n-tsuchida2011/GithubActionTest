@@ -1,0 +1,159 @@
+name: Update Project Custom Field Date
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 日本時間 12時
+    - cron: '0 9 * * *'   # 日本時間 18時
+    - cron: '0 13 * * *'  # 日本時間 22時
+
+jobs:
+  update-project-date:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Update Project Custom Field
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN_PAT }}
+          script: |
+            const query = `
+              query {
+                user(login: "${{ github.repository_owner }}") {
+                  projectV2(number: 2) {
+                    id
+                    items(first: 100) {
+                      nodes {
+                        id
+                        content {
+                          ... on Issue {
+                            number
+                            title
+                          }
+                        }
+                        fieldValues(first: 10) {
+                          nodes {
+                            ... on ProjectV2ItemFieldSingleSelectValue {
+                              field {
+                                ... on ProjectV2SingleSelectField {
+                                  name
+                                }
+                              }
+                              name
+                            }
+                            ... on ProjectV2ItemFieldDateValue {
+                              field {
+                                ... on ProjectV2Field {
+                                  name
+                                }
+                              }
+                              date
+                            }
+                          }
+                        }
+                      }
+                    }
+                    fields(first: 20) {
+                      nodes {
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options {
+                            id
+                            name
+                          }
+                        }
+                        ... on ProjectV2Field {
+                          id
+                          name
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const result = await github.graphql(query);
+            const project = result.user.projectV2;
+
+            console.log("🔍 Project ID:", project.id);
+            console.log("📊 Project Items:", project.items.nodes.length);
+
+            // Statusフィールドと完了日フィールドのIDを取得
+            let statusFieldId = null;
+            let dateFieldId = null;
+            let statusFieldOptions = {};
+
+            for (const field of project.fields.nodes) {
+              if (field.name === "Status") {
+                statusFieldId = field.id;
+                if (field.options) {
+                  field.options.forEach(opt => {
+                    statusFieldOptions[opt.name] = opt.id;
+                  });
+                }
+              }
+              if (field.name === "完了日") {
+                dateFieldId = field.id;
+              }
+            }
+
+            console.log("✅ Status Field ID:", statusFieldId);
+            console.log("✅ Date Field ID:", dateFieldId);
+            console.log("📋 Status Options:", statusFieldOptions);
+
+            // 「開発完了」ステータスのIssueをすべて検索
+            let updatedCount = 0;
+            const today = new Date().toISOString().split('T')[0];
+
+            for (const item of project.items.nodes) {
+              if (!item.content || !item.content.number) continue;
+
+              let currentStatus = null;
+              let currentDate = null;
+
+              // 現在のStatusと完了日を取得
+              for (const fieldValue of item.fieldValues.nodes) {
+                if (fieldValue.field && fieldValue.field.name === "Status") {
+                  currentStatus = fieldValue.name;
+                }
+                if (fieldValue.field && fieldValue.field.name === "完了日") {
+                  currentDate = fieldValue.date;
+                }
+              }
+
+              // Statusが「開発完了」で、かつ完了日が未設定の場合のみ更新
+              if (currentStatus === "開発完了" && !currentDate) {
+                console.log(`📝 Issue #${item.content.number}: 完了日を設定します`);
+
+                const updateMutation = `
+                  mutation {
+                    updateProjectV2ItemFieldValue(input: {
+                      projectId: "${project.id}"
+                      itemId: "${item.id}"
+                      fieldId: "${dateFieldId}"
+                      value: { date: "${today}" }
+                    }) {
+                      projectV2Item {
+                        id
+                      }
+                    }
+                  }
+                `;
+
+                try {
+                  await github.graphql(updateMutation);
+                  console.log(`✅ Issue #${item.content.number}: 完了日を ${today} に更新しました`);
+                  updatedCount++;
+                } catch (error) {
+                  console.error(`❌ Issue #${item.content.number}: 更新に失敗しました`, error.message);
+                }
+              } else if (currentStatus === "開発完了" && currentDate) {
+                console.log(`⏭️  Issue #${item.content.number}: すでに完了日が設定されています（${currentDate}）`);
+              }
+            }
+
+            console.log(`\n🎉 更新完了: ${updatedCount}件のIssueを更新しました`);
