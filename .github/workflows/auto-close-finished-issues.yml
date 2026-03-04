@@ -1,8 +1,8 @@
 name: Auto Close Finished Issues
 
 on:
-  issues:
-    types: [edited]
+  project_card:
+    types: [moved]
 
 jobs:
   close-finished-issues:
