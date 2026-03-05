@@ -5,6 +5,7 @@ on:
     - cron: '0 3 * * *'   # 日本時間 12時
     - cron: '0 9 * * *'   # 日本時間 18時
     - cron: '0 13 * * *'  # 日本時間 22時
+  workflow_dispatch:
 
 jobs:
   update-project-date:
