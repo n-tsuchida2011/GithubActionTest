@@ -20,42 +20,12 @@ jobs:
         with:
           github-token: ${{ secrets.P_TOKEN_PAT }}
           script: |
-            const query = `
+            // Step 1: プロジェクトのフィールド情報を取得
+            const fieldQuery = `
               query {
                 user(login: "${{ github.repository_owner }}") {
                   projectV2(number: 2) {
                     id
-                    items(first: 100) {
-                      nodes {
-                        id
-                        content {
-                          ... on Issue {
-                            number
-                            title
-                          }
-                        }
-                        fieldValues(first: 10) {
-                          nodes {
-                            ... on ProjectV2ItemFieldSingleSelectValue {
-                              field {
-                                ... on ProjectV2SingleSelectField {
-                                  name
-                                }
-                              }
-                              name
-                            }
-                            ... on ProjectV2ItemFieldDateValue {
-                              field {
-                                ... on ProjectV2Field {
-                                  name
-                                }
-                              }
-                              date
-                            }
-                          }
-                        }
-                      }
-                    }
                     fields(first: 20) {
                       nodes {
                         ... on ProjectV2SingleSelectField {
@@ -77,11 +47,10 @@ jobs:
               }
             `;
 
-            const result = await github.graphql(query);
-            const project = result.user.projectV2;
+            const fieldResult = await github.graphql(fieldQuery);
+            const project = fieldResult.user.projectV2;
 
             console.log("🔍 Project ID:", project.id);
-            console.log("📊 Project Items:", project.items.nodes.length);
 
             // Statusフィールドと完了日フィールドのIDを取得
             let statusFieldId = null;
@@ -106,11 +75,81 @@ jobs:
             console.log("✅ Date Field ID:", dateFieldId);
             console.log("📋 Status Options:", statusFieldOptions);
 
-            // 「開発完了」ステータスのIssueをすべて検索
+            // Step 2: ペーション処理ですべてのアイテムを取得
+            let allItems = [];
+            let hasNextPage = true;
+            let cursor = null;
+            let pageCount = 0;
+
+            while (hasNextPage) {
+              pageCount++;
+              console.log(`\n📄 ページ ${pageCount} を取得中...`);
+
+              const itemsQuery = `
+                query {
+                  user(login: "${{ github.repository_owner }}") {
+                    projectV2(number: 2) {
+                      items(first: 100, after: ${cursor ? `"${cursor}"` : 'null'}) {
+                        nodes {
+                          id
+                          content {
+                            ... on Issue {
+                              number
+                              title
+                            }
+                          }
+                          fieldValues(first: 10) {
+                            nodes {
+                              ... on ProjectV2ItemFieldSingleSelectValue {
+                                field {
+                                  ... on ProjectV2SingleSelectField {
+                                    name
+                                  }
+                                }
+                                name
+                              }
+                              ... on ProjectV2ItemFieldDateValue {
+                                field {
+                                  ... on ProjectV2Field {
+                                    name
+                                  }
+                                }
+                                date
+                              }
+                            }
+                          }
+                        }
+                        pageInfo {
+                          hasNextPage
+                          endCursor
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+
+              const itemResult = await github.graphql(itemsQuery);
+              const items = itemResult.user.projectV2.items;
+
+              console.log(`✓ ${items.nodes.length} 件取得`);
+              allItems = allItems.concat(items.nodes);
+
+              hasNextPage = items.pageInfo.hasNextPage;
+              cursor = items.pageInfo.endCursor;
+
+              if (hasNextPage) {
+                console.log(`📌 次ページあり（カーソル: ${cursor.substring(0, 10)}...）`);
+              }
+            }
+
+            console.log(`\n🎯 合計 ${allItems.length} 件のアイテムを取得しました`);
+
+            // Step 3: 対象アイテムを抽出して更新
             let updatedCount = 0;
             const today = new Date().toISOString().split('T')[0];
 
-            for (const item of project.items.nodes) {
+            for (const item of allItems) {
               if (!item.content || !item.content.number) continue;
 
               let currentStatus = null;
@@ -126,9 +165,7 @@ jobs:
                 }
               }
 
-              console.log(`📝 Issue #${item.content.number}: ${currentStatus}`);
-              
-              // Statusが「開発完了」で、かつ完了日が未設定の場合のみ更新
+              // Statusが「開発完了」「FW検証中」「終了」で、かつ完了日が未設定の場合のみ更新
               if ((currentStatus === "開発完了" || currentStatus === "FW検証中" || currentStatus === "終了") && !currentDate) {
                 console.log(`📝 Issue #${item.content.number}: 完了日を設定します`);
 
@@ -154,8 +191,10 @@ jobs:
                 } catch (error) {
                   console.error(`❌ Issue #${item.content.number}: 更新に失敗しました`, error.message);
                 }
-              } else if (currentStatus === "開発完了" && currentDate) {
-                console.log(`⏭️  Issue #${item.content.number}: すでに完了日が設定されています（${currentDate}）`);
+              } else if (currentStatus === "開発完了" || currentStatus === "FW検証中" || currentStatus === "終了") {
+                if (currentDate) {
+                  console.log(`⏭️  Issue #${item.content.number}: すでに完了日が設定されています（${currentDate}）`);
+                }
               }
             }
 
