@@ -126,7 +126,7 @@ jobs:
                 }
               }
 
-              console.log(`📝 Issue #${item.content.number}: {currentStatus}`);
+              console.log(`📝 Issue #${item.content.number}: ${currentStatus}`);
               
               // Statusが「開発完了」で、かつ完了日が未設定の場合のみ更新
               if ((currentStatus === "開発完了" || currentStatus === "FW検証中 || currentStatus === "終了") && !currentDate) {
